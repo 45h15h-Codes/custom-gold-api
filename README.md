@@ -1,6 +1,6 @@
-# India Gold Rate API
+# India Gold & Silver Rate API
 
-A fast, lightweight, and reliable REST API built with FastAPI that provides real-time gold rates in India (INR). The API fetches actual Indian market rates and provides international spot price calculations with import duties as a fallback.
+A fast, lightweight, and reliable REST API built with FastAPI that provides real-time gold and silver rates in India (INR). The API fetches actual Indian market rates and provides international spot price calculations with import duties as a fallback.
 
 ## Features
 
@@ -8,6 +8,7 @@ A fast, lightweight, and reliable REST API built with FastAPI that provides real
 - **Clever Fallback**: Automatically falls back to calculating rates using Yahoo Finance international spot prices (`GC=F`) combined with USD to INR rates (`USDINR=X`) and an estimation of current Indian import duties (~15% total duties) if primary scraping fails.
 - **Multiple Units**: Provides prices in Per Gram, Per 10 Grams, and Per Tola (11.6638 grams).
 - **Purity Options**: Returns comprehensive prices for both 22-carat and 24-carat gold.
+- **Silver Rates**: Returns silver prices in per gram, per 10 grams, per tola, and per kg.
 
 ## Endpoints
 
@@ -37,6 +38,31 @@ Returns the current gold prices and source accuracy metadata.
     "accuracy": "actual Indian market rate",
     "note": "Excludes making charges & hallmarking fees",
     "updated_at": "2024-03-24T10:00:00+00:00"
+  }
+}
+```
+
+### `GET /silver`
+
+Returns the current silver prices and source metadata.
+
+**Example Response:**
+```json
+{
+  "status": "ok",
+  "provider": "navkar",
+  "prices": {
+    "silver": {
+      "per_gram": 96.5,
+      "per_10g": 965.0,
+      "per_tola": 1125.56,
+      "per_kg": 96500.0
+    }
+  },
+  "meta": {
+    "source": "navkargold.com (Surat - Smart API)",
+    "location": "Surat, Gujarat",
+    "updated_at": "2026-04-27T12:00:00+00:00"
   }
 }
 ```

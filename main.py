@@ -38,6 +38,30 @@ def build_response(g22, g24, source, accuracy_text="actual Indian market rate"):
     }
 
 
+def build_silver_response(silver_g, source, accuracy_text="actual Indian market rate"):
+    return {
+        "silver": {
+            "per_gram": round(silver_g, 2),
+            "per_10g": round(silver_g * 10, 2),
+            "per_tola": round(silver_g * TOLA, 2),
+            "per_kg": round(silver_g * 1000, 2),
+        },
+        "source": source,
+        "accuracy": accuracy_text,
+    }
+
+
+def provider_from_source(source: str) -> str:
+    source_l = source.lower()
+    if "navkar" in source_l:
+        return "navkar"
+    if "yahoo" in source_l:
+        return "yahoo"
+    if "ibja" in source_l:
+        return "ibja"
+    return "unknown"
+
+
 def parse_rates(soup):
     """HTML se 22K/24K rate extract karne ka purana logic (Fallbacks ke liye)"""
     rate_24k = rate_22k = None
@@ -81,12 +105,19 @@ def scrape_navkargold_api():
 
         target_line = ""
 
-        # LAYER 1: Multiple Keywords Fallback
-        keywords = ["999", "24K", "24 CARAT", "FINE", "IMP", "PURE"]
+        # Priority 1: explicitly use Navkar COSTING line.
         for line in lines:
-            if "GOLD" in line and any(k in line for k in keywords):
+            if "GOLD COSTING" in line:
                 target_line = line
                 break
+
+        # LAYER 1 Fallback: Multiple Keywords
+        if not target_line:
+            keywords = ["999", "24K", "24 CARAT", "FINE", "IMP", "PURE"]
+            for line in lines:
+                if "GOLD" in line and any(k in line for k in keywords):
+                    target_line = line
+                    break
 
         # LAYER 2: Price Logic Fallback
         if not target_line:
@@ -146,6 +177,79 @@ def get_yfinance_rate():
     return None
 
 
+def scrape_navkarsilver_api():
+    """Source 1: Navkar silver live feed (Surat)"""
+    try:
+        timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+        url = f"https://bcast.navkargold.com:7768/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/navkar?_={timestamp}"
+
+        custom_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/147.0.0.0",
+            "Accept": "text/plain, */*; q=0.01",
+            "Origin": "https://navkargold.com",
+            "Referer": "https://navkargold.com/",
+        }
+
+        resp = requests.get(url, headers=custom_headers, timeout=10)
+        text = resp.text.replace(",", "")
+        lines = text.upper().split("\n")
+
+        target_line = ""
+
+        # Priority 1: explicitly use Navkar COSTING line.
+        for line in lines:
+            if "SILVER COSTING" in line:
+                target_line = line
+                break
+
+        # Fallback: generic SILVER line.
+        if not target_line:
+            for line in lines:
+                if "SILVER" in line and not any(
+                    noise in line for noise in ["SILVERMINI", "SILVER MICRO", "SILVERM"]
+                ):
+                    target_line = line
+                    break
+
+        if not target_line:
+            target_line = text.upper()
+
+        numbers = [float(n) for n in re.findall(r"\b\d{4,6}(?:\.\d+)?\b", target_line)]
+        for val in numbers:
+            # COSTING feed can come in high INR/KG values (e.g. 243523).
+            if 30000 < val < 500000:
+                return build_silver_response(
+                    val / 1000, "navkargold.com (Surat - Smart API)"
+                )
+            # Fallback if feed already has per-gram values.
+            if 40 < val < 250:
+                return build_silver_response(val, "navkargold.com (Surat - Smart API)")
+
+    except Exception as e:
+        print(f"Navkar Silver API error: {e}")
+    return None
+
+
+def get_yfinance_silver_rate():
+    """Source 2: Yahoo Finance fallback for silver (Surat adjusted)"""
+    try:
+        silver_usd_oz = yf.Ticker("SI=F").fast_info.last_price
+        usd_inr = yf.Ticker("USDINR=X").fast_info.last_price
+        intl_silver_g = (silver_usd_oz / TROY_OZ_TO_GRAM) * usd_inr
+
+        # Basic local premium for taxes/logistics.
+        silver_g = round(intl_silver_g * 1.06, 2)
+
+        return build_silver_response(
+            silver_g,
+            "Yahoo Finance Silver (Surat Fallback)",
+            "approx — intl spot + Indian duty/premium",
+        )
+    except Exception as e:
+        print(f"Yahoo Silver error: {e}")
+    return None
+
+
 def scrape_ibja():
     """Source 3: Official IBJA rates site"""
     try:
@@ -189,7 +293,7 @@ def get_gold_navkar():
 
     return {
         "status": "ok",
-        "provider": "navkar",
+        "provider": provider_from_source(data["source"]),
         "prices": {"22k": data["22k"], "24k": data["24k"]},
         "meta": {
             "source": data["source"],
@@ -229,8 +333,47 @@ def get_gold_ibja():
 
     return {
         "status": "ok",
-        "provider": "ibja",
+        "provider": provider_from_source(data["source"]),
         "prices": {"22k": data["22k"], "24k": data["24k"]},
+        "meta": {
+            "source": data["source"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
+@app.get("/silver")
+def get_silver_navkar():
+    """Default silver route: Navkar first, Yahoo fallback"""
+    data = scrape_navkarsilver_api() or get_yfinance_silver_rate()
+
+    if not data:
+        return {"status": "error", "message": "Navkar and Yahoo both are down for silver"}
+
+    return {
+        "status": "ok",
+        "provider": provider_from_source(data["source"]),
+        "prices": {"silver": data["silver"]},
+        "meta": {
+            "source": data["source"],
+            "location": "Surat, Gujarat",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
+@app.get("/silver/yahoo")
+def get_silver_yahoo():
+    """Sirf Yahoo Finance silver rate dikhayega"""
+    data = get_yfinance_silver_rate()
+
+    if not data:
+        return {"status": "error", "message": "Yahoo Finance is currently unavailable"}
+
+    return {
+        "status": "ok",
+        "provider": "yahoo",
+        "prices": {"silver": data["silver"]},
         "meta": {
             "source": data["source"],
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -246,10 +389,7 @@ def root():
             "default": "/gold (Navkar Surat)",
             "yahoo": "/gold/yahoo (Live Intl Adjusted)",
             "ibja": "/gold/ibja (Official IBJA)",
+            "silver_default": "/silver (Navkar Surat)",
+            "silver_yahoo": "/silver/yahoo (Live Intl Adjusted)",
         },
     }
-
-
-@app.get("/")
-def root():
-    return {"api": "Surat Gold Rate API", "usage": "Visit /gold for live rates"}
