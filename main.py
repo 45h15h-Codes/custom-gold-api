@@ -105,11 +105,18 @@ def scrape_navkargold_api():
 
         target_line = ""
 
-        # Priority 1: explicitly use Navkar COSTING line.
+        # Priority 1: explicitly use "GOLD 999 IMP" line (flexible match for future-proofing)
         for line in lines:
-            if "GOLD COSTING" in line:
+            if "GOLD" in line and "999" in line and "IMP" in line:
                 target_line = line
                 break
+
+        # Priority 2: Safely fallback to Navkar COSTING line if Priority 1 fails
+        if not target_line:
+            for line in lines:
+                if "GOLD COSTING" in line:
+                    target_line = line
+                    break
 
         # LAYER 1 Fallback: Multiple Keywords
         if not target_line:
