@@ -53,6 +53,8 @@ def build_silver_response(silver_g, source, accuracy_text="actual Indian market 
 
 def provider_from_source(source: str) -> str:
     source_l = source.lower()
+    if "allindiabullion" in source_l:
+        return "allindiabullion"
     if "navkar" in source_l:
         return "navkar"
     if "yahoo" in source_l:
@@ -86,8 +88,52 @@ def parse_rates(soup):
     return rate_22k, rate_24k
 
 
+def scrape_allindiabullion(product_type):
+    """Fetch from All India Bullion and extract '999 WITH GST' price for GOLD or SILVER."""
+    from curl_cffi import requests as curl_requests
+    try:
+        resp = curl_requests.get("https://allindiabullion.com/gold-rate/gujarat/surat", headers=HEADERS, timeout=12, impersonate="chrome110")
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            text = soup.get_text(separator="\n", strip=True).upper()
+            lines = text.split("\n")
+            
+            for i, line in enumerate(lines):
+                if "999 WITH GST" in line:
+                    is_product = False
+                    for j in range(1, 6):
+                        if i + j >= len(lines):
+                            break
+                        next_line = lines[i + j].strip()
+                        if next_line == product_type:
+                            is_product = True
+                        m = re.search(r"₹\s*([\d,]+)", next_line)
+                        if m and is_product:
+                            return float(m.group(1).replace(",", ""))
+    except Exception as e:
+        print(f"AIB error for {product_type}: {e}")
+    return None
+
+
+def scrape_allindiabullion_gold():
+    val_10g = scrape_allindiabullion("GOLD")
+    if val_10g:
+        r24 = round(val_10g / 10.0, 2)
+        r22 = round(r24 * (22 / 24), 2)
+        return build_response(r22, r24, "allindiabullion.com (Surat)")
+    return None
+
+
+def scrape_allindiabullion_silver():
+    val_kg = scrape_allindiabullion("SILVER")
+    if val_kg:
+        silver_g = round(val_kg / 1000.0, 2)
+        return build_silver_response(silver_g, "allindiabullion.com (Surat)")
+    return None
+
+
 def scrape_navkargold_api():
-    """Source 1: Navkar Gold ka Direct Live API (Bulletproof Version)"""
+    """Source 2: Navkar Gold ka Direct Live API (Bulletproof Version)"""
     try:
         timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
         url = f"https://bcast.navkargold.com:7768/VOTSBroadcastStreaming/Services/xml/GetLiveRateByTemplateID/navkar?_={timestamp}"
@@ -292,11 +338,11 @@ def scrape_goldpriceindia():
 
 @app.get("/gold")
 def get_gold_navkar():
-    """Default route: Sabse pehle Navkar (Surat) check karega"""
-    data = scrape_navkargold_api() or get_yfinance_rate()
+    """Default route: Sabse pehle All India Bullion check karega, fir Navkar, fir Yahoo"""
+    data = scrape_allindiabullion_gold() or scrape_navkargold_api() or get_yfinance_rate()
 
     if not data:
-        return {"status": "error", "message": "Navkar and Yahoo both are down"}
+        return {"status": "error", "message": "All sources are down"}
 
     return {
         "status": "ok",
@@ -351,11 +397,11 @@ def get_gold_ibja():
 
 @app.get("/silver")
 def get_silver_navkar():
-    """Default silver route: Navkar first, Yahoo fallback"""
-    data = scrape_navkarsilver_api() or get_yfinance_silver_rate()
+    """Default silver route: All India Bullion first, Navkar, Yahoo fallback"""
+    data = scrape_allindiabullion_silver() or scrape_navkarsilver_api() or get_yfinance_silver_rate()
 
     if not data:
-        return {"status": "error", "message": "Navkar and Yahoo both are down for silver"}
+        return {"status": "error", "message": "All sources are down for silver"}
 
     return {
         "status": "ok",
@@ -393,10 +439,10 @@ def root():
     return {
         "api": "Surat Gold Rate API",
         "endpoints": {
-            "default": "/gold (Navkar Surat)",
+            "default": "/gold (All India Bullion Surat)",
             "yahoo": "/gold/yahoo (Live Intl Adjusted)",
             "ibja": "/gold/ibja (Official IBJA)",
-            "silver_default": "/silver (Navkar Surat)",
+            "silver_default": "/silver (All India Bullion Surat)",
             "silver_yahoo": "/silver/yahoo (Live Intl Adjusted)",
         },
     }
